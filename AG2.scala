@@ -18,61 +18,60 @@ trait Instruction {
 }
 
 // A normal operation, like 'dec
-case class StandardOp(op: Symbol, gen: List[String], uses: List[String])    extends Instruction {
+case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends Instruction {
   def eval(env: Env): Env = {
     ???
   }
 }
 
 // A no-op, like 'nop or 'hint_nop7
-case class NoOp()                                                           extends Instruction {
-  def eval(env: Env): Env = env                                             // Do nothing (the identity function)
+case class NoOp()                                                             extends Instruction {
+  def eval(env: Env): Env = env                                               // Do nothing (the identity function)
 }
 
 // An unconditional jump, like 'jmp
-case class UnconditionalJump(target: Int)                                   extends Instruction {
+case class UnconditionalJump(target: Int)                                     extends Instruction {
   def eval(env: Env): Env = Env(
-    target,                                                                 // Overwrite the instruction pointer
-    env.stack_refs, env.cs, env.cmp_uses,                                   // Preserve everything else about the system
-    env.op_sources, env.dyn_loc_sources, env.mov_sources,                   // Including our interpretation of it
-    env.linked                                                              // Including the intermediate result
+    target,                                                                   // Overwrite the instruction pointer
+    env.stack_refs, env.cs, env.cmp_uses,                                     // Preserve everything else
+    env.op_sources, env.dyn_loc_sources, env.mov_sources,                     // Including our interpretation of it
+    env.linked                                                                // Including the intermediate result
   )
 }
 
 // A conditional jump, like 'jnz
-case class ConditionalJump(op: Symbol, target: Int)                         extends Instruction {
+case class ConditionalJump(op: Symbol, target: Int)                           extends Instruction {
   def eval(env: Env): Env = {
     ???
   }
 }
 
 // A call to a procedure, like 'call
-case class ProcedureCall(target: Int)                                       extends Instruction {
+case class ProcedureCall(target: Int)                                         extends Instruction {
   def eval(env: Env): Env = {
-    val return_addr = env.line + 1                                          // Calculate the return address
+    val return_addr = env.line + 1                                            // Calculate the return address
     return Env(
-      target,                                                               // Overwrite the instruction pointer
-      env.stack_refs,                                                       // Preserve the stack
-      return_addr :: env.cs,                                                // But update the virtual call stack
-      env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources,   // Preserve everything else
-      env.linked                                                            // Including the intermediate result
+      target,                                                                 // Overwrite the instruction pointer
+      env.stack_refs,                                                         // Preserve the stack
+      return_addr :: env.cs,                                                  // But update the virtual call stack
+      env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources,     // Preserve everything else
+      env.linked                                                              // Including the intermediate result
     )
   }
 }
 
 // A return from a procedures, like 'ret
-case class ProcedureReturn()                                                extends Instruction {
+case class ProcedureReturn()                                                  extends Instruction {
   def eval(env: Env): Env = env.cs match {
-    case return_addr :: cs_remaining                                        // If the call stack has a return address
+    case return_addr :: cs_remaining                                          // If the call stack has a return address
       => Env(
-        return_addr,                                                        // Jump to the return address
-        env.stack_refs,                                                     // Preserve the stack
-        cs_remaining,                                                       // Return what's remaining to the call stack
-        env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources, // Preserve everything else
-        env.linked                                                          // Including the intermediate result
+        return_addr,                                                          // Jump to the return address
+        env.stack_refs,                                                       // Preserve the stack
+        cs_remaining,                                                         // Return the remains of the call stack
+        env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources,   // Preserve everything else
+        env.linked                                                            // Including the intermediate result
       )
-    case _                                                                  // Otherwise, if the call stack is empty
-      => throw new IllegalArgumentException("Call Stack Underflow")         // Error out, this is not allowed
+    case _                                                                    // Otherwise, if the call stack is empty
+      => throw new IllegalArgumentException("Call Stack Underflow")           // Error out, this is not allowed
   }
 }
-
