@@ -12,10 +12,13 @@ case class Env(
   val linked: Set[Tuple2[Symbol, Symbol]]   // Which operations are dependent on each other, their part of the result
 )
 
-// A trait representing an instruction that can be executed in this context
-trait Instruction {
+// A trait representing something that can be executed
+sealed trait Interpreted {
   def eval(env: Env): Env // An instruction needs to be able to be evaluated
 }
+
+// A trait representing an instruction that can be executed
+sealed trait Instruction extends Interpreted
 
 // A normal operation, like 'dec
 case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends Instruction {
@@ -73,5 +76,12 @@ case class ProcedureReturn()                                                  ex
       )
     case _                                                                    // Otherwise, if the call stack is empty
       => throw new IllegalArgumentException("Call Stack Underflow")           // Error out, this is not allowed
+  }
+}
+
+// A list of instructions, a program that is abstracted over its environment
+case class DependentProgram(instructions: Traversable[Instruction])           extends Interpreted {
+  def eval(env: Env): Env = {
+    ???
   }
 }
