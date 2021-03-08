@@ -2,7 +2,7 @@ import scala.util.NotGiven
 
 type ResEnv[+V, +E] = Tuple2[Option[V], E]
 
-trait Interpretable[T, E, V] {
+trait Interpretable[-T, E, +V] {
   def eval(env: E, expr: T): ResEnv[V, E] =
     None -> this.exec(env, expr)
   end eval
@@ -29,14 +29,3 @@ given [T, E](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] wit
   override def eval(env: E, expr: T) =
     Some(expr) -> env
   end eval
-
-@main
-def main =
-  println(
-    process(new TestOp)
-  )
-end main
-
-def process[T](x: T)(using interpreter: Interpretable[T, Int, Nothing]) =
-  interpreter.exec(7, x)
-end process
