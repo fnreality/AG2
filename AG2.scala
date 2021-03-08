@@ -32,21 +32,21 @@ trait Interpretable[-T, E : SteppedRepr, +V]:
     None -> ( stepper step this.exec(env, expr) )
   end eval
   def exec(env: E, expr: T)(using stepper: SteppedRepr[E]): E =
-    ( stepper step this.eval(env, expr) )._2
+    stepper step this.eval(env, expr)._2
   end exec
 
 trait Instruction[E]:
   def shift(env: E): E
 
 // A normal operation, like 'dec
-case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends Instruction:
+case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends Instruction[Env]:
   def shift(env: Env): Env = Env(
-    env.line, env.stack_refs, env.cmp_uses,
-    env.op_sources ++ Map( gen map { _ -> op } ),
+    env.line, env.stack_refs, env.cs, env.cmp_uses,
+    env.op_sources ++ Map( gen map { _ -> op } : _*),
     env.dyn_loc_sources, env.mov_sources,
     env.linked ++ Map( uses flatMap {
       env.op_sources get _
-    } map { _ -> op } )
+    } map { _ -> op } : _*)
   )
 
 enum StackOpDirection {
@@ -54,30 +54,35 @@ enum StackOpDirection {
 }
 
 // An instruction that pushes something onto the stack, like 'push
-case class StackPush(src: String)                                             extends Instruction:
+case class StackPush(src: String)                                             extends Instruction[Env]:
   def shift(env: Env): Env = ???
 
 // An instruction that pops something off of the stack, like 'pop
-case class StackPop(target: String)                                           extends Instruction:
+case class StackPop(target: String)                                           extends Instruction[Env]:
   def shift(env: Env): Env = ???
 
 // An instruction that triggers the internal comparator, like 'cmp
-case class ComparatorTrigger(lhs: String, rhs: String)                        extends Instruction:
+case class ComparatorTrigger(lhs: String, rhs: String)                        extends Instruction[Env]:
   def shift(env: Env): Env = ???
 
 // A mov-like instruction, like 'mov or 'xchg
-case class TransferOp(op: Symbol, target: String, src: String)                extends Instruction:
+case class TransferOp(op: Symbol, target: String, src: String)                extends Instruction[Env]:
   def shift(env: Env): Env =
+    val pure_transfer = (op == Symbol("mov")).||(
+      op == Symbol("lea") || op == Symbol("xchg")
+    )
     val new_link_info =
-      if Set('mov, 'lea, 'xchg) contains op then
+      if pure_transfer then
         (env.op_sources, env.linked)
       else
         (
           env.op_sources + (target -> op),
-          env.linked ++ Map( env.op_sources get src flatMap { _ -> op } )
+          env.linked ++ Map( env.op_sources get src flatMap {
+            _ -> op
+          } : _* )
         )
     val new_mov_sources =
-      if op == 'xchg then
+      if op == Symbol("xchg") then
         env.mov_sources ++ Map(
           target -> (env.mov_sources get src getOrElse src),
           src -> (env.mov_sources get target getOrElse target)
@@ -87,17 +92,17 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
           env.mov_sources get src getOrElse src
         ) )
     Env(
-      env.line, env.stack_refs, env.cmp_uses, new_link_info._1,
+      env.line, env.stack_refs, env.cs, env.cmp_uses, new_link_info._1,
       env.dyn_loc_sources, new_mov_sources, new_link_info._2
     )
   end shift
 
 // A no-op, like 'nop or 'hint_nop7
-case class NoOp()                                                             extends Instruction:
+case class NoOp()                                                             extends Instruction[Env]:
   def shift(env: Env): Env = env                                               // Do nothing (the identity function)
 
 // An unconditional jump, like 'jmp
-case class UnconditionalJump(target: Int)                                     extends Instruction:
+case class UnconditionalJump(target: Int)                                     extends Instruction[Env]:
   def shift(env: Env): Env = Env(
     target,                                                                   // Overwrite the instruction pointer
     env.stack_refs, env.cs, env.cmp_uses,                                     // Preserve everything else
@@ -105,11 +110,11 @@ case class UnconditionalJump(target: Int)                                     ex
   )
 
 // A conditional jump, like 'jnz
-case class ConditionalJump(op: Symbol, target: Int)                           extends Instruction:
+case class ConditionalJump(op: Symbol, target: Int)                           extends Instruction[Env]:
   def shift(env: Env): Env = ???
 
 // A call to a procedure, like 'call
-case class ProcedureCall(target: Int)                                         extends Instruction:
+case class ProcedureCall(target: Int)                                         extends Instruction[Env]:
   def shift(env: Env): Env =
     val return_addr = env.line + 1                                            // Calculate the return address
     return Env(
@@ -122,7 +127,7 @@ case class ProcedureCall(target: Int)                                         ex
   end shift
 
 // A return from a procedures, like 'ret
-case class ProcedureReturn()                                                  extends Instruction:
+case class ProcedureReturn()                                                  extends Instruction[Env]:
   def shift(env: Env): Env = env.cs match {
     case return_addr :: cs_remaining                                          // If the call stack has a return address
       => Env(
@@ -141,14 +146,15 @@ given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
     expr shift env
   end exec
 
-given[E, T : Interpretable]: Interpretable[Traversable[T], E, Nothing] with
-  override def exec(env: E, expr: Traversable[T])(
-    using interpreter: Interpretable[T]
-  )(using stepper: SteppedRepr[E]) =
-    ( expr foldLeft env )( interpreter.exec andThen stepper.step )
-  end exec
+given[E, T](using Interpretable[T, E, Nothing]): Interpretable[Traversable[T], E, Nothing] with
+  override def exec(env: E, expr: Traversable[T])(using stepper: SteppedRepr[E])(
+    using interpreter: Interpretable[T, E, Nothing]
+  ) = ( expr foldLeft env )(Function.untupled(
+    interpreter.exec.tupled andThen stepper.step
+  ))
 
 given [E, T](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] with
   override def eval(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     Some(expr) -> ( stepper step env )
   end eval
+
