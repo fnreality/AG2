@@ -146,7 +146,7 @@ given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
     stepper step ( expr shift env )
   end exec
 
-given[E, T](
+given [E, T](
   using interpreter: Interpretable[T, E, Nothing]
 ): Interpretable[Traversable[T], E, Nothing] with
   override def exec(env: E, expr: Traversable[T])(
