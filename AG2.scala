@@ -40,7 +40,7 @@ trait Instruction[E]:
 
 // A normal operation, like 'dec
 case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends Instruction:
-  def eval(env: Env): Env = Env(
+  def shift(env: Env): Env = Env(
     env.line, env.stack_refs, env.cmp_uses,
     env.op_sources ++ Map( gen map { _ -> op } ),
     env.dyn_loc_sources, env.mov_sources,
@@ -51,7 +51,7 @@ case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      ex
 
 // A mov-like instruction, like 'mov or 'xchg
 case class TransferOp(op: Symbol, target: String, src: String)                extends Instruction:
-  def eval(env: Env): Env =
+  def shift(env: Env): Env =
     val new_link_info =
       if Set('mov, 'lea, 'xchg) contains op then
         (env.op_sources, env.linked)
@@ -81,14 +81,15 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
       new_link_info._1, env.dyn_loc_sources,
       new_mov_sources, new_link_info._2
     )
+  end shift
 
 // A no-op, like 'nop or 'hint_nop7
 case class NoOp()                                                             extends Instruction:
-  def eval(env: Env): Env = env                                               // Do nothing (the identity function)
+  def shift(env: Env): Env = env                                               // Do nothing (the identity function)
 
 // An unconditional jump, like 'jmp
 case class UnconditionalJump(target: Int)                                     extends Instruction:
-  def eval(env: Env): Env = Env(
+  def shift(env: Env): Env = Env(
     target,                                                                   // Overwrite the instruction pointer
     env.stack_refs, env.cs, env.cmp_uses,                                     // Preserve everything else
     env.op_sources, env.dyn_loc_sources, env.mov_sources,                     // Including our interpretation of it
@@ -97,11 +98,11 @@ case class UnconditionalJump(target: Int)                                     ex
 
 // A conditional jump, like 'jnz
 case class ConditionalJump(op: Symbol, target: Int)                           extends Instruction:
-  def eval(env: Env): Env = ???
+  def shift(env: Env): Env = ???
 
 // A call to a procedure, like 'call
 case class ProcedureCall(target: Int)                                         extends Instruction:
-  def eval(env: Env): Env =
+  def shift(env: Env): Env =
     val return_addr = env.line + 1                                            // Calculate the return address
     return Env(
       target,                                                                 // Overwrite the instruction pointer
@@ -110,11 +111,11 @@ case class ProcedureCall(target: Int)                                         ex
       env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources,     // Preserve everything else
       env.linked                                                              // Including the intermediate result
     )
-  end eval
+  end shift
 
 // A return from a procedures, like 'ret
 case class ProcedureReturn()                                                  extends Instruction:
-  def eval(env: Env): Env = env.cs match {
+  def shift(env: Env): Env = env.cs match {
     case return_addr :: cs_remaining                                          // If the call stack has a return address
       => Env(
         return_addr,                                                          // Jump to the return address
