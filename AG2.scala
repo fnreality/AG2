@@ -77,9 +77,9 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
       else
         (
           env.op_sources + (target -> op),
-          env.linked ++ Map( env.op_sources get src flatMap {
+          env.linked ++ Map(( env.op_sources get src map {
             _ -> op
-          } : _* )
+          }).toList : _* )
         )
     val new_mov_sources =
       if op == Symbol("xchg") then
@@ -142,19 +142,18 @@ case class ProcedureReturn()                                                  ex
   }
 
 given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
-  override def exec(env: E, expr: T) =
-    expr shift env
+  override def exec(env: E, expr: T)(using stepper: SteppedRepr[E]): E =
+    stepper step ( expr shift env )
   end exec
 
-given[E, T](using Interpretable[T, E, Nothing]): Interpretable[Traversable[T], E, Nothing] with
-  override def exec(env: E, expr: Traversable[T])(using stepper: SteppedRepr[E])(
-    using interpreter: Interpretable[T, E, Nothing]
-  ) = ( expr foldLeft env )(Function.untupled(
-    interpreter.exec.tupled andThen stepper.step
-  ))
+given[E, T](
+  using interpreter: Interpretable[T, E, Nothing]
+): Interpretable[Traversable[T], E, Nothing] with
+  override def exec(env: E, expr: Traversable[T])(
+    using SteppedRepr[E]
+  ) = ( expr foldLeft env )(interpreter.exec)
 
 given [E, T](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] with
   override def eval(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     Some(expr) -> ( stepper step env )
   end eval
-
