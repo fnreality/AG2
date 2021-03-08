@@ -12,13 +12,22 @@ case class Env(
   val linked: Set[Tuple2[Symbol, Symbol]]   // Which operations are dependent on each other, their part of the result
 )
 
-// A trait representing something that can be executed
-sealed trait Interpreted {
-  def eval(env: Env): Env // An instruction needs to be able to be evaluated
+import scala.util.NotGiven
+
+type ResEnv[+V, +E] = Tuple2[Option[V], E]
+
+trait Interpretable[-T, E, +V] {
+  def eval(env: E, expr: T): ResEnv[V, E] =
+    None -> this.exec(env, expr)
+  end eval
+  def exec(env: E, expr: T): E =
+    this.eval(env, expr)._2
+  end exec
 }
 
-// A trait representing an instruction that can be executed
-sealed trait Instruction extends Interpreted
+trait Instruction[E] {
+  def step(env: E): E
+}
 
 // A normal operation, like 'dec
 case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends Instruction {
@@ -79,9 +88,17 @@ case class ProcedureReturn()                                                  ex
   }
 }
 
-// A list of instructions, a program that is abstracted over its environment
-case class DependentProgram(instructions: Traversable[Instruction])           extends Interpreted {
-  def eval(env: Env): Env = {
-    ???
-  }
-}
+given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
+  override def exec(env: E, expr: T) =
+    expr step env
+  end exec
+
+given[E, T : Interpretable]: Interpretable[Traversable[T], E, Nothing] with
+  override def exec(env: E, expr: Traversable[T])(using interpreter: Interpretable[T]) =
+    ( expr foldLeft env )(interpreter.exec)
+  end exec
+
+given [E, T](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] with
+  override def eval(env: E, expr: T) =
+    Some(expr) -> env
+  end eval
