@@ -25,7 +25,7 @@ given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
     expr step env
   end exec
 
-given [T, E](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] with
+given [E, T](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] with
   override def eval(env: E, expr: T) =
     Some(expr) -> env
   end eval
