@@ -114,13 +114,13 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
 
 // A no-op, like 'nop or 'hint_nop7
 case class NoOp()                                                             extends Instruction[Env]:
-  def shift(env: Env): Env = env                                               // Do nothing (the identity function)
+  def shift(env: Env): Env = env
 
 // An unconditional jump, like 'jmp
 case class UnconditionalJump(target: Int)                                     extends Instruction[Env]:
   def shift(env: Env): Env = Env(
-    target, env.stack_ops,                                                   // Overwrite the instruction pointer
-    env.cs, env.cmp_uses, env.op_sources, env.dyn_loc_sources,                // Preserve everything else
+    target, env.stack_ops,
+    env.cs, env.cmp_uses, env.op_sources, env.dyn_loc_sources,
     env.mov_sources, env.linked, env.cond_fork_depth
   )
 
@@ -131,28 +131,27 @@ case class ConditionalJump(op: Symbol, target: Int)                           ex
 // A call to a procedure, like 'call
 case class ProcedureCall(target: Int)                                         extends Instruction[Env]:
   def shift(env: Env): Env =
-    val return_addr = env.line + 1                                            // Calculate the return address
+    val return_addr = env.line + 1
     return Env(
-      target,                                                                 // Overwrite the instruction pointer
-      env.stack_ops,                                                         // Preserve the stack
-      return_addr :: env.cs,                                                  // But update the virtual call stack
-      env.cmp_uses, env.op_sources, env.dyn_loc_sources,                      // Preserve everything else
+      target,
+      env.stack_ops,
+      return_addr :: env.cs,
+      env.cmp_uses, env.op_sources, env.dyn_loc_sources,
       env.mov_sources, env.linked, env.cond_fork_depth
     )
   end shift
 
 // A return from a procedures, like 'ret
 case class ProcedureReturn()                                                  extends Instruction[Env]:
-  def shift(env: Env): Env = env.cs match {
-    case return_addr :: cs_remaining                                          // If the call stack has a return address
+  def shift(env: Env): Env = env.cs match
+    case return_addr :: cs_remaining
       => Env(
         return_addr, env.stack_ops, cs_remaining,
         env.cmp_uses, env.op_sources, env.dyn_loc_sources,
         env.mov_sources, env.linked, env.cond_fork_depth
       )
-    case _                                                                    // Otherwise, if the call stack is empty
-      => throw new IllegalArgumentException("Call Stack Underflow")           // Error out, this is not allowed
-  }
+    case _
+      => throw new IllegalArgumentException("Call Stack Underflow")
 
 given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
   override def exec(env: E, expr: T)(using stepper: SteppedRepr[E]): E =
