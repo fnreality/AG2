@@ -66,7 +66,15 @@ case class StackPush(src: String)                                             ex
 
 // An instruction that pops something off of the stack, like 'pop
 case class StackPop(target: String)                                           extends Instruction[Env]:
-  def shift(env: Env): Env = ???
+  def shift(env: Env): Env = env.stack_ops match
+    case local_sources :: remaining => Env(
+      env.line, remaining, env.cs, env.cmp_uses,
+      env.op_sources ++ Map( local_sources map {
+        target -> _
+      } : _* ), env.dyn_loc_sources, env.mov_sources,
+      env.linked, env.cond_fork_depth
+    )
+    case Nil => throw IllegalArgumentException("Internal Stack Underflow")
 
 // An instruction that triggers the internal comparator, like 'cmp
 case class ComparatorTrigger(lhs: String, rhs: String)                        extends Instruction[Env]:
@@ -150,8 +158,7 @@ case class ProcedureReturn()                                                  ex
         env.cmp_uses, env.op_sources, env.dyn_loc_sources,
         env.mov_sources, env.linked, env.cond_fork_depth
       )
-    case _
-      => throw new IllegalArgumentException("Call Stack Underflow")
+    case Nil => throw IllegalArgumentException("Call Stack Underflow")
 
 given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
   override def exec(env: E, expr: T)(using stepper: SteppedRepr[E]): E =
