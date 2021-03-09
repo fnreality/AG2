@@ -3,7 +3,7 @@ import scala.util.NotGiven
 // Represent the programs environment
 case class Env(
   val line: Int,                            // The current line the program is on, akin to the instruction pointer
-  val stack_refs: List[String],             // The stack, as named references to the original sources, (moves handled)
+  val stack_refs: List[Symbol],             // The stack, as the original source operations of what was referenced
   val cs: List[Int],                        // The call stack, containing the return addresses as line numbers
   val cmp_uses: List[Symbol],               // The used operations of the internal comparator, manipulated with 'cmp
   val op_sources: Map[String, Symbol],      // Associations from registers to the operation that created them
