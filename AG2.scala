@@ -29,6 +29,23 @@ given SteppedRepr[Env] with
 given [T](using NotGiven[SteppedRepr[T]]): SteppedRepr[T] with
   def step(env: T): T = env
 
+trait CheckEnv[E]:
+  def exec(env: E): Traversable[E] =
+    val result = super exec env
+    return result flatMap { x => if (
+      summon[VerifiableEnv[E]] verify result
+    ) then Some(x) else None }
+  end exec
+
+trait VerifiableEnv[-E]:
+  def verify(env: E): Boolean
+
+given VerifiableEnv[Env] with
+  def verify(env: E): Boolean = env.cond_fork_depth <= 10
+
+given [T](using NotGiven[VerifiableEnv[T]]): VerifiableEnv[T] with
+  def verify(env: E): Boolean = true
+
 type ResEnv[+V, +E] = Tuple2[Option[V], E]
 
 trait Interpretable[-T, E : SteppedRepr, +V]:
@@ -39,11 +56,11 @@ trait Interpretable[-T, E : SteppedRepr, +V]:
     stepper step this.eval(env, expr)._2
   end exec
 
-trait HyperInstruction[E]:
+trait HyperInstr[E]:
   def shift(env: E): Traversable[E]
 
 // A normal operation, like 'dec
-case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends HyperInstruction[Env]:
+case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, env.stack_ops, env.cs, env.cmp_uses,
     env.op_sources ++ Map( gen map { _ -> op } : _*),
@@ -56,7 +73,7 @@ case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      ex
   ))
 
 // An instruction that pushes something onto the stack, like 'push
-case class StackPush(src: String)                                             extends HyperInstruction[Env]:
+case class StackPush(src: String)                                             extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, (
       ( env accessOp src ).toList ::: env.dyn_loc_sources
@@ -65,7 +82,7 @@ case class StackPush(src: String)                                             ex
   ))
 
 // An instruction that pops something off of the stack, like 'pop
-case class StackPop(target: String)                                           extends HyperInstruction[Env]:
+case class StackPop(target: String)                                           extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = env.stack_ops match
     case local_sources :: remaining => Some(Env(
       env.line, remaining, env.cs, env.cmp_uses,
@@ -77,7 +94,7 @@ case class StackPop(target: String)                                           ex
     case Nil => None
 
 // An instruction that triggers the internal comparator, like 'cmp
-case class ComparatorTrigger(lhs: String, rhs: String)                        extends HyperInstruction[Env]:
+case class ComparatorTrigger(lhs: String, rhs: String)                        extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, env.stack_ops, env.cs, List(
       env accessOp lhs, env accessOp rhs
@@ -86,7 +103,7 @@ case class ComparatorTrigger(lhs: String, rhs: String)                        ex
   ))
 
 // A mov-like instruction, like 'mov or 'xchg
-case class TransferOp(op: Symbol, target: String, src: String)                extends HyperInstruction[Env]:
+case class TransferOp(op: Symbol, target: String, src: String)                extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] =
     val pure_transfer = (op == Symbol("mov")).||(
       op == Symbol("lea") || op == Symbol("xchg")
@@ -121,18 +138,18 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
   end shift
 
 // A no-op, like 'nop or 'hint_nop7
-case class NoOp()                                                             extends HyperInstruction[Env]:
+case class NoOp()                                                             extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = Some(env)
 
 // An unconditional jump, like 'jmp
-case class UnconditionalJump(target: Int)                                     extends HyperInstruction[Env]:
+case class UnconditionalJump(target: Int)                                     extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     target, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
     env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
   ))
 
 // A conditional jump, like 'jnz
-case class ConditionalJump(op: Symbol, target: Int)                           extends HyperInstruction[Env]:
+case class ConditionalJump(op: Symbol, target: Int)                           extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = List(env.line, target) map {
     Env(
       _, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
@@ -142,7 +159,7 @@ case class ConditionalJump(op: Symbol, target: Int)                           ex
   }
 
 // A call to a procedure, like 'call
-case class ProcedureCall(target: Int)                                         extends HyperInstruction[Env]:
+case class ProcedureCall(target: Int)                                         extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] =
     val return_addr = env.line + 1
     return Some(Env(
@@ -155,7 +172,7 @@ case class ProcedureCall(target: Int)                                         ex
   end shift
 
 // A return from a procedures, like 'ret
-case class ProcedureReturn()                                                  extends HyperInstruction[Env]:
+case class ProcedureReturn()                                                  extends HyperInstr[Env] with CheckEnv[Env]:
   def shift(env: Env): Traversable[Env] = env.cs match
     case return_addr :: cs_remaining
       => Some(Env(
@@ -166,14 +183,14 @@ case class ProcedureReturn()                                                  ex
     case Nil => None
 
 given [E, T <: Instruction[E]]: Interpretable[T, E, Nothing] with
-  override def exec(env: E, expr: T)(using stepper: SteppedRepr[E]): E =
+  override def exec(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     stepper step ( expr shift env )
   end exec
 
-given [E, T <: HyperInstruction[E]]: Intepretable[T, Traversable[E], Nothing] with
-  override def exec(env: Traversable[E], expr: T)(using stepper: SteppedRepr[Traversable[E]]): E =
-    ???
-  end exec
+given [E, T <: HyperInstr[E]]: Intepretable[T, Traversable[E], Nothing] with
+  override def exec(env: Traversable[E], expr: T)(
+    using stepper: SteppedRepr[Traversable[E]]
+  ) = env flatMap expr.exec
 
 given [E, T](
   using interpreter: Interpretable[T, E, Nothing]
