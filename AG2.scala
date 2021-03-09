@@ -5,12 +5,17 @@ case class Env(
   val line: Int,                            // The current line the program is on, akin to the instruction pointer
   val stack_refs: List[String],             // The stack, as named references to the original sources, (moves handled)
   val cs: List[Int],                        // The call stack, containing the return addresses as line numbers
-  val cmp_uses: Tuple2[Symbol, Symbol],     // The current targets of the internal comparator, manipulated with 'cmp
+  val cmp_uses: List[Symbol],               // The used operations of the internal comparator, manipulated with 'cmp
   val op_sources: Map[String, Symbol],      // Associations from registers to the operation that created them
   val dyn_loc_sources: List[Symbol],        // The dynamic operations that lead to the current location of line
   val mov_sources: Map[String, String],     // Associations from registers to their original source their data is from
-  val linked: Set[Tuple2[Symbol, Symbol]]   // Which operations are dependent on each other, their part of the result
-)
+  val linked: Set[Tuple2[Symbol, Symbol]],  // Which operations are dependent on each other, their part of the result
+  val cond_fork_depth: Int                  // How long the current chain of conditional jumps that this represents is
+) {
+  def accessOp(reg: String): Option[Symbol] =
+    op_sources get ( mov_sources get reg getOrElse reg )
+  end accessOp
+}
 
 trait SteppedRepr[T]:
   def step(env: T): T
@@ -19,7 +24,7 @@ given SteppedRepr[Env] with
   def step(env: Env): Env = Env(
     env.line + 1,
     env.stack_refs, env.cs, env.cmp_uses, env.op_sources,
-    env.dyn_loc_sources, env.mov_sources, env.linked
+    env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
   )
 
 given [T](using NotGiven[SteppedRepr[T]]): SteppedRepr[T] with
@@ -44,14 +49,12 @@ case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      ex
     env.line, env.stack_refs, env.cs, env.cmp_uses,
     env.op_sources ++ Map( gen map { _ -> op } : _*),
     env.dyn_loc_sources, env.mov_sources,
-    env.linked ++ Map( uses flatMap {
-      env.op_sources get _
-    } map { _ -> op } : _*)
+    env.linked ++ Map( uses flatMap env.accessOp map {
+      _ -> op
+    } : _*) ++ Map( env.dyn_loc_sources map {
+      _ -> op
+    } : _*), env.cond_fork_depth
   )
-
-enum StackOpDirection {
-  case Push, Pop
-}
 
 // An instruction that pushes something onto the stack, like 'push
 case class StackPush(src: String)                                             extends Instruction[Env]:
@@ -63,7 +66,12 @@ case class StackPop(target: String)                                           ex
 
 // An instruction that triggers the internal comparator, like 'cmp
 case class ComparatorTrigger(lhs: String, rhs: String)                        extends Instruction[Env]:
-  def shift(env: Env): Env = ???
+  def shift(env: Env): Env = Env(
+    env.line, env.stack_refs, env.cs, List(
+      env accessOp lhs, env accessOp rhs
+    ).flatten ::: env.dyn_loc_sources, env.op_sources,
+    env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
+  )
 
 // A mov-like instruction, like 'mov or 'xchg
 case class TransferOp(op: Symbol, target: String, src: String)                extends Instruction[Env]:
@@ -77,9 +85,11 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
       else
         (
           env.op_sources + (target -> op),
-          env.linked ++ Map(( env.op_sources get src map {
+          env.linked ++ Map(( env accessOp src map {
             _ -> op
-          }).toList : _* )
+          }).toList : _* ) ++ Map( env.dyn_loc_sources map {
+            _ -> op
+          } : _* )
         )
     val new_mov_sources =
       if op == Symbol("xchg") then
@@ -92,8 +102,9 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
           env.mov_sources get src getOrElse src
         ) )
     Env(
-      env.line, env.stack_refs, env.cs, env.cmp_uses, new_link_info._1,
-      env.dyn_loc_sources, new_mov_sources, new_link_info._2
+      env.line, env.stack_refs, env.cs, env.cmp_uses,
+      new_link_info._1, env.dyn_loc_sources, new_mov_sources,
+      new_link_info._2, env.cond_fork_depth
     )
   end shift
 
@@ -104,9 +115,9 @@ case class NoOp()                                                             ex
 // An unconditional jump, like 'jmp
 case class UnconditionalJump(target: Int)                                     extends Instruction[Env]:
   def shift(env: Env): Env = Env(
-    target,                                                                   // Overwrite the instruction pointer
-    env.stack_refs, env.cs, env.cmp_uses,                                     // Preserve everything else
-    env.op_sources, env.dyn_loc_sources, env.mov_sources, env.linked          // Including our interpretation of it
+    target, env.stack_refs,                                                   // Overwrite the instruction pointer
+    env.cs, env.cmp_uses, env.op_sources, env.dyn_loc_sources,                // Preserve everything else
+    env.mov_sources, env.linked, env.cond_fork_depth
   )
 
 // A conditional jump, like 'jnz
@@ -121,8 +132,8 @@ case class ProcedureCall(target: Int)                                         ex
       target,                                                                 // Overwrite the instruction pointer
       env.stack_refs,                                                         // Preserve the stack
       return_addr :: env.cs,                                                  // But update the virtual call stack
-      env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources,     // Preserve everything else
-      env.linked                                                              // Including the intermediate result
+      env.cmp_uses, env.op_sources, env.dyn_loc_sources,                      // Preserve everything else
+      env.mov_sources, env.linked, env.cond_fork_depth
     )
   end shift
 
@@ -131,11 +142,9 @@ case class ProcedureReturn()                                                  ex
   def shift(env: Env): Env = env.cs match {
     case return_addr :: cs_remaining                                          // If the call stack has a return address
       => Env(
-        return_addr,                                                          // Jump to the return address
-        env.stack_refs,                                                       // Preserve the stack
-        cs_remaining,                                                         // Return the remains of the call stack
-        env.cmp_uses, env.op_sources, env.dyn_loc_sources, env.mov_sources,   // Preserve everything else
-        env.linked                                                            // Including the intermediate result
+        return_addr, env.stack_refs, cs_remaining,
+        env.cmp_uses, env.op_sources, env.dyn_loc_sources,
+        env.mov_sources, env.linked, env.cond_fork_depth
       )
     case _                                                                    // Otherwise, if the call stack is empty
       => throw new IllegalArgumentException("Call Stack Underflow")           // Error out, this is not allowed
