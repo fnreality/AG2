@@ -29,10 +29,9 @@ given SteppedRepr[Env] with
 given [T](using NotGiven[SteppedRepr[T]]): SteppedRepr[T] with
   def step(env: T): T = env
 
-trait HCheckedEnv[E] extends HyperI[E]:
-  this: HyperI[E] =>
-  def shift(env: E): Traversable[E] =
-    val result = this.shift(env)
+trait CheckedHyperEnv[E] extends HyperI[E]:
+  abstract override def shift(env: E): Traversable[E] =
+    val result = super.shift(env)
     return result.flatMap { x => if (
       summon[VerifiableEnv[E]].verify(result)
     ) then Some(x) else None }
@@ -61,7 +60,7 @@ trait HyperI[E]:
   def shift(env: E): Traversable[E]
 
 // A normal operation, like 'dec
-case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      extends HCheckedEnv[Env] with HyperI[Env]:
+case class StandardOp(op: Symbol, gen: List[String], uses: List[String])          extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, env.stack_ops, env.cs, env.cmp_uses,
     env.op_sources ++ Map( gen.map { _ -> op } : _*),
@@ -74,7 +73,7 @@ case class StandardOp(op: Symbol, gen: List[String], uses: List[String])      ex
   ))
 
 // An instruction that pushes something onto the stack, like 'push
-case class StackPush(src: String)                                             extends VEnv[HyperI, Env] with HyperI[Env]:
+case class StackPush(src: String)                                                 extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, (
       env.accessOp(src).toList ::: env.dyn_loc_sources
@@ -83,7 +82,7 @@ case class StackPush(src: String)                                             ex
   ))
 
 // An instruction that pops something off of the stack, like 'pop
-case class StackPop(target: String)                                           extends HCheckedEnv[Env] with HyperI[Env]:
+case class StackPop(target: String)                                               extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = env.stack_ops match
     case local_sources :: remaining => Some(Env(
       env.line, remaining, env.cs, env.cmp_uses,
@@ -95,8 +94,8 @@ case class StackPop(target: String)                                           ex
     case Nil => None
 
 // An instruction that triggers the internal comparator, like 'cmp
-case class ComparatorTrigger(lhs: String, rhs: String)                        extends HCheckedEnv[Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] = Some(Env(
+case class ComparatorTrigger(lhs: String, rhs: String)                            extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, env.stack_ops, env.cs, List(
       env.accessOp(lhs), env.accessOp(rhs)
     ).flatten ::: env.dyn_loc_sources, env.op_sources,
@@ -104,8 +103,8 @@ case class ComparatorTrigger(lhs: String, rhs: String)                        ex
   ))
 
 // A mov-like instruction, like 'mov or 'xchg
-case class TransferOp(op: Symbol, target: String, src: String)                extends HCheckedEnv[Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] =
+case class TransferOp(op: Symbol, target: String, src: String)                    extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] =
     val pure_transfer = (op == Symbol("mov")).||(
       op == Symbol("lea") || op == Symbol("xchg")
     )
@@ -139,29 +138,35 @@ case class TransferOp(op: Symbol, target: String, src: String)                ex
   end shift
 
 // A no-op, like 'nop or 'hint_nop7
-case class NoOp()                                                             extends HCheckedEnv[Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] = Some(env)
+case class NoOp()                                                                 extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] = Some(env)
 
 // An unconditional jump, like 'jmp
-case class UnconditionalJump(target: Int)                                     extends HCheckedEnv[Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] = Some(Env(
+case class UnconditionalJump(target: Int)                                         extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] = Some(Env(
     target, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
     env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
   ))
 
-// A conditional jump, like 'jnz
-case class ConditionalJump(op: Symbol, target: Int)                           extends HCheckedEnv[Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] = List(env.line, target) map {
-    Env(
-      _, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
-      op :: env.dyn_loc_sources, env.mov_sources, env.linked,
-      env.cond_fork_depth + 1
-    )
-  }
+// A conditional jump, like 'jnz, but without verification
+case class RawConditionalJump(op: Symbol, target: Int)                            extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] =
+    List(env.line, target) map {
+      Env(
+        _, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
+        op :: env.dyn_loc_sources, env.mov_sources, env.linked,
+        env.cond_fork_depth + 1
+      )
+    }
+  end shift
+
+// A conditional jump, like 'jnz, but with verification
+class ConditionalJump(override val op: Symbol, override val target: Int)
+  extends RawConditionalJump(op, target) with CheckedHyperEnv[Env]
 
 // A call to a procedure, like 'call
-case class ProcedureCall(target: Int)                                         extends HCheckedEnv[Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] =
+case class ProcedureCall(target: Int)                                             extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] =
     val return_addr = env.line + 1
     return Some(Env(
       target,
@@ -173,8 +178,8 @@ case class ProcedureCall(target: Int)                                         ex
   end shift
 
 // A return from a procedures, like 'ret
-case class ProcedureReturn()                                                  extends VEnv[HyperI, Env] with HyperI[Env]:
-  override def shift(env: Env): Traversable[Env] = env.cs match
+case class ProcedureReturn()                                                      extends HyperI[Env]:
+  def shift(env: Env): Traversable[Env] = env.cs match
     case return_addr :: cs_remaining
       => Some(Env(
         return_addr, env.stack_ops, cs_remaining,
@@ -199,4 +204,3 @@ given [E, T](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] wit
   override def eval(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     Some(expr) -> stepper.step(env)
   end eval
-
