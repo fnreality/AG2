@@ -35,9 +35,20 @@ given [T : SteppedRepr]: SteppedRepr[Traversable[T]] with
 trait WithIRef[-T, -E, +R]:
   def retrieve(env: E, expr: T): R
 
-given [T]: WithIRef[Traversable[T], Env, T] with
-  def retrieve(env: Env, expr: Traversable[T]): T =
-    expr.drop(env.line).head
+object ParallelExprs:
+  opaque type ParallelExpr[+T] = List[T]
+  
+  object ParallelExpr[T]:
+    def apply(tr: Traversable[T]): ParallelExpr[T] = tr.toList
+
+  extension [T](x : ParallelExpr[T])
+    def toList: List[T] = x
+
+import ParallelExprs._
+
+given [T]: WithIRef[ParallelExpr[T], Env, T] with
+  def retrieve(env: Env, expr: ParallelExpr[T]): T =
+    expr.toList.drop(env.line).head
   end retrieve
 
 given [T, E, R](
@@ -206,7 +217,7 @@ case class ProcedureReturn()                                                    
       ))
     case Nil => None
 
-given [E]: Interpretable[Traversable[HyperI[E]], Traversable[E], Nothing] with
+given [E]: Interpretable[ParallelExpr[HyperI[E]], Traversable[E], Nothing] with
   override def exec(env: Traversable[E], expr: Traversable[HyperI[E]])(
     using stepper: SteppedRepr[Traversable[E]]
   ): Traversable[E] = stepper.step( expr.zip(env).flatMap {
@@ -215,8 +226,8 @@ given [E]: Interpretable[Traversable[HyperI[E]], Traversable[E], Nothing] with
 
 given [T, E : SteppedRepr : (
   [X] =>> WithIRef[Traversable[T], X, T]
-), Y <: E : SteppedRepr](
-  using interpreter: Interpretable[T, Y, Nothing]
+)](
+  using interpreter: Interpretable[T, E, Nothing]
 ): Interpretable[Traversable[T], E, Nothing] with
   override def exec(env: E, expr: Traversable[T])(
     using SteppedRepr[E]
@@ -227,7 +238,8 @@ given [T, E : SteppedRepr : (
     using SteppedRepr[E]
   ): E = if expr.nonEmpty
     then execRecursive(interpreter.exec(
-      env, summon[WithIRef[Traversable[T], Y, T]].retrieve(env, expr)
+      env,
+      summon[WithIRef[Traversable[T], E, T]].retrieve(env, expr)
     ), expr)
   else env
 
@@ -242,4 +254,5 @@ given [E : SteppedRepr, T](
 
 def test()(
   using interpreter: Interpretable[Traversable[HyperI[Env]], Traversable[Env], Nothing]
-): Env = ???
+) /* : Env */ = 90
+
