@@ -38,24 +38,26 @@ trait WithIRef[-T, -E, +R]:
 object ParallelExprs:
   opaque type ParallelExpr[+T] = List[T]
   
-  object ParallelExpr[T]:
-    def apply(tr: Traversable[T]): ParallelExpr[T] = tr.toList
+  object ParallelExpr:
+    def apply[T](tr: Traversable[T]): ParallelExpr[T] = tr.toList
 
   extension [T](x : ParallelExpr[T])
     def toList: List[T] = x
 
 import ParallelExprs._
 
-given [T]: WithIRef[ParallelExpr[T], Env, T] with
-  def retrieve(env: Env, expr: ParallelExpr[T]): T =
-    expr.toList.drop(env.line).head
+given [T]: WithIRef[Traversable[T], Env, T] with
+  def retrieve(env: Env, expr: Traversable[T]): T =
+    expr.drop(env.line).head
   end retrieve
 
 given [T, E, R](
-  using iref: WithIRef[T, E, R]
-): WithIRef[T, Traversable[E], Traversable[R]] with
-  def retrieve(env: Traversable[E], expr: T): Traversable[R] =
-    env.map { iref.retrieve(_, expr) }
+  using iref: WithIRef[Traversable[T], E, R]
+): WithIRef[Traversable[T], Traversable[E], ParallelExpr[R]] with
+  def retrieve(env: Traversable[E], expr: Traversable[T]): ParallelExpr[R] =
+    ParallelExpr( env.map {
+      iref.retrieve(_, expr)
+    } )
   end retrieve
 
 trait CheckedHyperEnv[E] extends HyperI[E]:
@@ -218,16 +220,29 @@ case class ProcedureReturn()                                                    
     case Nil => None
 
 given [E]: Interpretable[ParallelExpr[HyperI[E]], Traversable[E], Nothing] with
-  override def exec(env: Traversable[E], expr: Traversable[HyperI[E]])(
+  override def exec(env: Traversable[E], expr: ParallelExpr[HyperI[E]])(
     using stepper: SteppedRepr[Traversable[E]]
-  ): Traversable[E] = stepper.step( expr.zip(env).flatMap {
+  ): Traversable[E] = stepper.step( expr.toList.zip(env).flatMap {
     _.shift(_)
   } )
 
-given [T, E : SteppedRepr : (
-  [X] =>> WithIRef[Traversable[T], X, T]
-)](
-  using interpreter: Interpretable[T, E, Nothing]
+// T := HyperI[Env]
+// E := Traversable[Env]
+// iref : WithIRef[Traversable[T], E, Y]
+// iref : WithIRef[Traversable[T], Traversable[Env], ParallelExpr[R]]
+//        E := Env
+//        Y := ParallelExpr[R]
+//        using iref : WithIRef[Traversable[T], E, R]
+//        using iref : WithIRef[Traversable[T], E, T]
+//        R := T
+// Y := ParallelExpr[T]
+// interpreter : Interpretable[Y, E, Nothing]
+// interpreter : Interpretable[ParallelExpr[HyperI[Env]], Traversable[Env], Nothing]
+
+given [E : SteppedRepr, T, Y](
+  using iref: WithIRef[Traversable[T], E, Y]
+)(
+  using interpreter: Interpretable[Y, E, Nothing]
 ): Interpretable[Traversable[T], E, Nothing] with
   override def exec(env: E, expr: Traversable[T])(
     using SteppedRepr[E]
@@ -239,20 +254,21 @@ given [T, E : SteppedRepr : (
   ): E = if expr.nonEmpty
     then execRecursive(interpreter.exec(
       env,
-      summon[WithIRef[Traversable[T], E, T]].retrieve(env, expr)
+      iref.retrieve(env, expr)
     ), expr)
   else env
 
+/*
 given [E : SteppedRepr, T](
   using NotGiven[Interpretable[T, E, T]]
 ): Interpretable[T, E, T] with
   override def eval(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     Some(expr) -> stepper.step(env)
   end eval
+*/
 
 @main def main = println(test())
 
 def test()(
   using interpreter: Interpretable[Traversable[HyperI[Env]], Traversable[Env], Nothing]
 ) /* : Env */ = 90
-
