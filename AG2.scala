@@ -4,18 +4,21 @@ import scala.util.NotGiven
 // Represent the programs environment
 case class Env(
   val line: Int = 0,                                // The current line the interpreter should be on, used for WithIRef
-  val stack_ops: List[List[Symbol]] = List(),       // The stack, as the original source operations instead of the data
+  val stack_ops: List[List[String]] = List(),       // The stack, as the original source operations instead of the data
   val cs: List[Int] = List(),                       // The call stack, containing the return addresses as line numbers
-  val cmp_uses: List[Symbol] = List(),              // The operations that formed the internal comparator via 'cmp
-  val op_sources: Map[String, Symbol] = Map(),      // Associations from registers to the operation that created them
-  val dyn_loc_sources: List[Symbol] = List(),       // The dynamic operations that lead to the current location of line
+  val cmp_uses: List[String] = List(),              // The operations that formed the internal comparator via 'cmp
+  val op_sources: Map[String, String] = Map(),      // Associations from registers to the operation that created them
+  val dyn_loc_sources: List[String] = List(),       // The dynamic operations that lead to the current location of line
   val mov_sources: Map[String, String] = Map(),     // Associations from registers to their original source
-  val linked: Set[Tuple2[Symbol, Symbol]] = Set(),  // Which operations are dependent on each other, as known so far
+  val linked: Set[Tuple2[String, String]] = Set(),  // Which operations are dependent on each other, as known so far
   val cond_fork_depth: Int = 0                      // Length of the current chain of conditional jumps that made this
 ):
-  def accessOp(reg: String): Option[Symbol] =
+  def accessOp(reg: String): Option[String] =
     op_sources.get( mov_sources.get(reg).getOrElse(reg) )
   end accessOp
+
+trait WithNoOp[+T]:
+  def noOp: T
 
 trait SteppedRepr[T]:
   def step(env: T): T
@@ -34,6 +37,7 @@ given [T : SteppedRepr]: SteppedRepr[Traversable[T]] with
 
 trait WithIRef[-T, -E, +R]:
   def retrieve(env: E, expr: T): R
+  def hasRemaining(env: E, expr: T): Boolean
 
 object ParallelExprs:
   opaque type ParallelExpr[+T] = List[T]
@@ -46,10 +50,16 @@ object ParallelExprs:
 
 import ParallelExprs._
 
-given [T]: WithIRef[Traversable[T], Env, T] with
+given [T : WithNoOp]: WithIRef[Traversable[T], Env, T] with
   def retrieve(env: Env, expr: Traversable[T]): T =
-    expr.drop(env.line).head
+    if hasRemaining(env, expr)
+      then expr.drop(env.line).head
+    else summon[WithNoOp[T]].noOp
   end retrieve
+  
+  def hasRemaining(env: Env, expr: Traversable[T]): Boolean =
+    expr.size > env.line
+  end hasRemaining
 
 given [T, E, R](
   using iref: WithIRef[Traversable[T], E, R]
@@ -59,6 +69,10 @@ given [T, E, R](
       iref.retrieve(_, expr)
     } )
   end retrieve
+  
+  def hasRemaining(env: Traversable[E], expr: Traversable[T]): Boolean =
+    !env.exists(!iref.hasRemaining(_, expr))
+  end hasRemaining
 
 trait CheckedHyperEnv[E] extends HyperI[E]:
   abstract override def shift(env: E): Traversable[E] =
@@ -72,7 +86,9 @@ trait VerifiableEnv[-E]:
   def verify(env: E): Boolean
 
 given VerifiableEnv[Env] with
-  def verify(env: Env): Boolean = env.cond_fork_depth <= 10
+  def verify(env: Env): Boolean =
+    env.cond_fork_depth <= 10
+  end verify
 
 given [T](using NotGiven[VerifiableEnv[T]]): VerifiableEnv[T] with
   def verify(env: T): Boolean = true
@@ -90,13 +106,16 @@ trait Interpretable[-T, E, +V]:
 trait HyperI[E]:
   def shift(env: E): Traversable[E]
 
+given WithNoOp[HyperI[Env]] with
+  def noOp: HyperI[Env] = NoOp()
+
 // A normal operation, like 'dec
-case class StandardOp(op: Symbol, gen: List[String], uses: List[String])          extends HyperI[Env]:
+case class StandardOp(op: String, gen: List[String], uses: List[String])          extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
     env.line, env.stack_ops, env.cs, env.cmp_uses,
     env.op_sources ++ Map( gen.map { _ -> op } : _*),
     env.dyn_loc_sources, env.mov_sources,
-    env.linked ++ Map( uses.flatMap(env.accessOp).map {
+    env.linked ++ Map( (gen ++ uses).flatMap(env.accessOp).map {
       _ -> op
     } : _*) ++ Map( env.dyn_loc_sources.map {
       _ -> op
@@ -134,10 +153,10 @@ case class ComparatorTrigger(lhs: String, rhs: String)                          
   ))
 
 // A mov-like instruction, like 'mov or 'xchg
-case class TransferOp(op: Symbol, target: String, src: String)                    extends HyperI[Env]:
+case class TransferOp(op: String, target: String, src: String)                    extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] =
-    val pure_transfer = (op == Symbol("mov")).||(
-      op == Symbol("lea") || op == Symbol("xchg")
+    val pure_transfer = (op == "mov").||(
+      op == "lea" || op == "xchg"
     )
     val new_link_info =
       if pure_transfer then
@@ -152,7 +171,7 @@ case class TransferOp(op: Symbol, target: String, src: String)                  
           } : _* )
         )
     val new_mov_sources =
-      if op == Symbol("xchg") then
+      if op == "xchg" then
         env.mov_sources ++ Map(
           target -> env.mov_sources.get(src).getOrElse(src),
           src -> env.mov_sources.get(target).getOrElse(target)
@@ -172,31 +191,35 @@ case class TransferOp(op: Symbol, target: String, src: String)                  
 case class NoOp()                                                                 extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = Some(env)
 
-// An unconditional jump, like 'jmp
-case class UnconditionalJump(target: Int)                                         extends HyperI[Env]:
+// An unconditional jump, like 'jmp, but without verification
+case class RawUnconditionalJump(target: Int)                                      extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = Some(Env(
-    target, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
+    target - 1, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
     env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
   ))
 
+// An unconditional jump, like 'jmp, but with verification
+class UnconditionalJump(override val target: Int)
+  extends RawUnconditionalJump(target) with CheckedHyperEnv[Env]
+
 // A conditional jump, like 'jnz, but without verification
-case class RawConditionalJump(op: Symbol, target: Int)                            extends HyperI[Env]:
+case class RawConditionalJump(op: String, target: Int)                            extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] =
-    List(env.line, target) map {
+    List(env.line, target - 1) map {
       Env(
         _, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
-        op :: env.dyn_loc_sources, env.mov_sources, env.linked,
-        env.cond_fork_depth + 1
+        op :: (env.dyn_loc_sources ++ env.cmp_uses), env.mov_sources,
+        env.linked, env.cond_fork_depth + 1
       )
     }
   end shift
 
 // A conditional jump, like 'jnz, but with verification
-class ConditionalJump(override val op: Symbol, override val target: Int)
+class ConditionalJump(override val op: String, override val target: Int)
   extends RawConditionalJump(op, target) with CheckedHyperEnv[Env]
 
-// A call to a procedure, like 'call
-case class ProcedureCall(target: Int)                                             extends HyperI[Env]:
+// A call to a procedure, like 'call, but without verification
+case class RawProcedureCall(target: Int)                                          extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] =
     val return_addr = env.line + 1
     return Some(Env(
@@ -207,6 +230,10 @@ case class ProcedureCall(target: Int)                                           
       env.mov_sources, env.linked, env.cond_fork_depth
     ))
   end shift
+
+// A call to a procedure, like 'call, but with verification
+class ProcedureCall(override val target: Int)
+  extends RawProcedureCall(target) with CheckedHyperEnv[Env]
 
 // A return from a procedures, like 'ret
 case class ProcedureReturn()                                                      extends HyperI[Env]:
@@ -251,24 +278,39 @@ given [E : SteppedRepr, T, Y](
   @tailrec
   final def execRecursive(env: E, expr: Traversable[T])(
     using SteppedRepr[E]
-  ): E = if expr.nonEmpty
+  ): E = if iref.hasRemaining(env, expr)
     then execRecursive(interpreter.exec(
       env,
       iref.retrieve(env, expr)
     ), expr)
   else env
 
-/*
 given [E : SteppedRepr, T](
   using NotGiven[Interpretable[T, E, T]]
 ): Interpretable[T, E, T] with
   override def eval(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     Some(expr) -> stepper.step(env)
   end eval
-*/
 
 @main def main = println(test())
 
 def test()(
   using interpreter: Interpretable[Traversable[HyperI[Env]], Traversable[Env], Nothing]
-) /* : Env */ = 90
+) = interpreter.exec(List(new Env()), List(
+  NoOp(),
+  StandardOp("dec", List("eax"), List()),
+  StandardOp("inc", List("ebx"), List()),
+  TransferOp("xchg", "eax", "ebx"),
+  StandardOp("add", List("ecx"), List("eax")),
+  ComparatorTrigger("ecx", "ebx"),
+  ConditionalJump("jnz", 10),
+  UnconditionalJump(0),
+  StandardOp("add", List("[0xA]"), List("edx")),
+  ProcedureReturn(),
+  StandardOp("xlatb", List("eax"), List("ebx")),
+  StandardOp("dec", List("edx"), List()),
+  StackPush("edx"),
+  StackPop("[0xA]"),
+  StandardOp("sub", List("eax"), List("[0xA]")),
+  ProcedureCall(8)
+)).map(_.linked).map(_.filter(_ != _)).reduce(_ ++ _)
