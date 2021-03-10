@@ -1,3 +1,4 @@
+import scala.annotation.tailrec
 import scala.util.NotGiven
 
 // Represent the programs environment
@@ -26,8 +27,16 @@ given SteppedRepr[Env] with
     env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
   )
 
-given [T](using NotGiven[SteppedRepr[T]]): SteppedRepr[T] with
-  def step(env: T): T = env
+given [T : SteppedRepr]: SteppedRepr[Traversable[T]] with
+  def step(env: Traversable[T]): Traversable[T] =
+    env.map(summon[SteppedRepr[T]].step)
+  end step
+
+trait WithIRef[T]:
+  def retrieveIndex(env: T): Int
+
+given WithIRef[Env] with
+  def retrieveIndex(env: Env): Int = env.line
 
 trait CheckedHyperEnv[E] extends HyperI[E]:
   abstract override def shift(env: E): Traversable[E] =
@@ -48,7 +57,7 @@ given [T](using NotGiven[VerifiableEnv[T]]): VerifiableEnv[T] with
 
 type ResEnv[+V, +E] = Tuple2[Option[V], E]
 
-trait Interpretable[-T, E : SteppedRepr, +V]:
+trait Interpretable[-T, E, +V]:
   def eval(env: E, expr: T)(using stepper: SteppedRepr[E]): ResEnv[V, E] =
     None -> stepper.step( this.exec(env, expr) )
   end eval
@@ -190,17 +199,35 @@ case class ProcedureReturn()                                                    
 
 given [E]: Interpretable[HyperI[E], Traversable[E], Nothing] with
   override def exec(env: Traversable[E], expr: HyperI[E])(
-    using SteppedRepr[Traversable[E]]
-  ) = env.flatMap(expr.shift)
+    using stepper: SteppedRepr[Traversable[E]]
+  ) = stepper.step(env.flatMap(expr.shift))
 
-given [E, T](
+given [E : SteppedRepr : WithIRef, T](
   using interpreter: Interpretable[T, E, Nothing]
 ): Interpretable[Traversable[T], E, Nothing] with
   override def exec(env: E, expr: Traversable[T])(
     using SteppedRepr[E]
-  ) = expr.foldLeft(env)(interpreter.exec)
+  ) = execRecursive(env, expr)
 
-given [E, T](using NotGiven[Interpretable[T, E, T]]): Interpretable[T, E, T] with
+  @tailrec
+  final def execRecursive(env: E, expr: Traversable[T])(
+    using SteppedRepr[E]
+  ): E = if expr.nonEmpty
+    then execRecursive(interpreter.exec(
+      env,
+      expr.drop(
+        summon[WithIRef[E]].retrieveIndex(env)
+      ).head
+    ), expr)
+  else env
+
+given [E : SteppedRepr, T](
+  using NotGiven[Interpretable[T, E, T]]
+): Interpretable[T, E, T] with
   override def eval(env: E, expr: T)(using stepper: SteppedRepr[E]) =
     Some(expr) -> stepper.step(env)
   end eval
+
+@main def main = println(
+  List()
+)
