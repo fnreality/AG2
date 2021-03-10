@@ -32,11 +32,20 @@ given [T : SteppedRepr]: SteppedRepr[Traversable[T]] with
     env.map(summon[SteppedRepr[T]].step)
   end step
 
-trait WithIRef[T]:
-  def retrieveIndex(env: T): Int
+trait WithIRef[-T, -E, +R]:
+  def retrieve(env: E, expr: T): R
 
-given WithIRef[Env] with
-  def retrieveIndex(env: Env): Int = env.line
+given [T]: WithIRef[Traversable[T], Env, T] with
+  def retrieve(env: Env, expr: Traversable[T]): T =
+    expr.drop(env.line).head
+  end retrieve
+
+given [T, E, R](
+  using iref: WithIRef[T, E, R]
+): WithIRef[T, Traversable[E], Traversable[R]] with
+  def retrieve(env: Traversable[E], expr: T): Traversable[R] =
+    env.map { iref.retrieve(_, expr) }
+  end retrieve
 
 trait CheckedHyperEnv[E] extends HyperI[E]:
   abstract override def shift(env: E): Traversable[E] =
@@ -197,13 +206,17 @@ case class ProcedureReturn()                                                    
       ))
     case Nil => None
 
-given [E]: Interpretable[HyperI[E], Traversable[E], Nothing] with
-  override def exec(env: Traversable[E], expr: HyperI[E])(
+given [E]: Interpretable[Traversable[HyperI[E]], Traversable[E], Nothing] with
+  override def exec(env: Traversable[E], expr: Traversable[HyperI[E]])(
     using stepper: SteppedRepr[Traversable[E]]
-  ) = stepper.step(env.flatMap(expr.shift))
+  ): Traversable[E] = stepper.step( expr.zip(env).flatMap {
+    _.shift(_)
+  } )
 
-given [E : SteppedRepr : WithIRef, T](
-  using interpreter: Interpretable[T, E, Nothing]
+given [T, E : SteppedRepr : (
+  [X] =>> WithIRef[Traversable[T], X, T]
+), Y <: E : SteppedRepr](
+  using interpreter: Interpretable[T, Y, Nothing]
 ): Interpretable[Traversable[T], E, Nothing] with
   override def exec(env: E, expr: Traversable[T])(
     using SteppedRepr[E]
@@ -214,10 +227,7 @@ given [E : SteppedRepr : WithIRef, T](
     using SteppedRepr[E]
   ): E = if expr.nonEmpty
     then execRecursive(interpreter.exec(
-      env,
-      expr.drop(
-        summon[WithIRef[E]].retrieveIndex(env)
-      ).head
+      env, summon[WithIRef[Traversable[T], Y, T]].retrieve(env, expr)
     ), expr)
   else env
 
@@ -231,8 +241,5 @@ given [E : SteppedRepr, T](
 @main def main = println(test())
 
 def test()(
-  using interpreter: Interpretable[Traversable[HyperI[Env]], Env, Nothing]
-): Env = interpreter.exec(
-  Env()
-  List(StandardOp())
-)
+  using interpreter: Interpretable[Traversable[HyperI[Env]], Traversable[Env], Nothing]
+): Env = ???
