@@ -3,15 +3,15 @@ import scala.util.NotGiven
 
 // Represent the programs environment
 case class Env(
-  val line: Int,                            // The current line the program is on, akin to the instruction pointer
-  val stack_ops: List[List[Symbol]],        // The stack, as the original source operations of what was referenced
-  val cs: List[Int],                        // The call stack, containing the return addresses as line numbers
-  val cmp_uses: List[Symbol],               // The used operations of the internal comparator, manipulated with 'cmp
-  val op_sources: Map[String, Symbol],      // Associations from registers to the operation that created them
-  val dyn_loc_sources: List[Symbol],        // The dynamic operations that lead to the current location of line
-  val mov_sources: Map[String, String],     // Associations from registers to their original source their data is from
-  val linked: Set[Tuple2[Symbol, Symbol]],  // Which operations are dependent on each other, their part of the result
-  val cond_fork_depth: Int                  // How long the current chain of conditional jumps that this represents is
+  val line: Int = 0,                                // The current line the interpreter should be on, used for WithIRef
+  val stack_ops: List[List[Symbol]] = List(),       // The stack, as the original source operations instead of the data
+  val cs: List[Int] = List(),                       // The call stack, containing the return addresses as line numbers
+  val cmp_uses: List[Symbol] = List(),              // The operations that formed the internal comparator via 'cmp
+  val op_sources: Map[String, Symbol] = Map(),      // Associations from registers to the operation that created them
+  val dyn_loc_sources: List[Symbol] = List(),       // The dynamic operations that lead to the current location of line
+  val mov_sources: Map[String, String] = Map(),     // Associations from registers to their original source
+  val linked: Set[Tuple2[Symbol, Symbol]] = Set(),  // Which operations are dependent on each other, as known so far
+  val cond_fork_depth: Int = 0                      // Length of the current chain of conditional jumps that made this
 ):
   def accessOp(reg: String): Option[Symbol] =
     op_sources.get( mov_sources.get(reg).getOrElse(reg) )
@@ -228,6 +228,11 @@ given [E : SteppedRepr, T](
     Some(expr) -> stepper.step(env)
   end eval
 
-@main def main = println(
-  List()
+@main def main = println(test())
+
+def test()(
+  using interpreter: Interpretable[Traversable[HyperI[Env]], Env, Nothing]
+): Env = interpreter.exec(
+  Env()
+  List(StandardOp())
 )
