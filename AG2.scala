@@ -111,45 +111,39 @@ given WithNoOp[HyperI[Env]] with
 
 // A normal operation, like 'dec
 case class StandardOp(op: String, gen: List[String], uses: List[String])          extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(Env(
-    env.line, env.stack_ops, env.cs, env.cmp_uses,
-    env.op_sources ++ Map( gen.map { _ -> op } : _*),
-    env.dyn_loc_sources, env.mov_sources,
-    env.linked ++ Map( (gen ++ uses).flatMap(env.accessOp).map {
+  def shift(env: Env): Traversable[Env] = Some(env.copy(
+    op_sources= env.op_sources ++ Map( gen.map { _ -> op } : _*),
+    linked= env.linked ++ Map( (gen ++ uses).flatMap(env.accessOp).map {
       _ -> op
     } : _*) ++ Map( env.dyn_loc_sources.map {
       _ -> op
-    } : _*), env.cond_fork_depth
+    } : _*)
   ))
 
 // An instruction that pushes something onto the stack, like 'push
 case class StackPush(src: String)                                                 extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(Env(
-    env.line, (
+  def shift(env: Env): Traversable[Env] = Some(env.copy(stack_ops= (
       env.accessOp(src).toList ::: env.dyn_loc_sources
-    ) :: env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
-    env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
-  ))
+    ) :: env.stack_ops))
 
 // An instruction that pops something off of the stack, like 'pop
 case class StackPop(target: String)                                               extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = env.stack_ops match
-    case local_sources :: remaining => Some(Env(
-      env.line, remaining, env.cs, env.cmp_uses,
-      env.op_sources ++ Map( local_sources.map {
-        target -> _
-      } : _* ), env.dyn_loc_sources, env.mov_sources,
-      env.linked, env.cond_fork_depth
-    ))
+    case local_sources :: remaining
+      => Some(env.copy(
+        stack_ops= remaining,
+        op_sources= env.op_sources ++ Map( local_sources.map {
+          target -> _
+        } : _* )
+      ))
     case Nil => None
 
 // An instruction that triggers the internal comparator, like 'cmp
 case class ComparatorTrigger(lhs: String, rhs: String)                            extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(Env(
-    env.line, env.stack_ops, env.cs, List(
+  def shift(env: Env): Traversable[Env] = Some(env.copy(
+    cmp_uses= List(
       env.accessOp(lhs), env.accessOp(rhs)
-    ).flatten ::: env.dyn_loc_sources, env.op_sources,
-    env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
+    ).flatten ::: env.dyn_loc_sources
   ))
 
 // A mov-like instruction, like 'mov or 'xchg
@@ -158,6 +152,7 @@ case class TransferOp(op: String, target: String, src: String)                  
     val pure_transfer = (op == "mov").||(
       op == "lea" || op == "xchg"
     )
+    // new_link_info ::= (op_sources, linked)
     val new_link_info =
       if pure_transfer then
         (env.op_sources, env.linked)
@@ -180,10 +175,8 @@ case class TransferOp(op: String, target: String, src: String)                  
         env.mov_sources + ( target -> (
           env.mov_sources.get(src).getOrElse(src)
         ) )
-    return Some(Env(
-      env.line, env.stack_ops, env.cs, env.cmp_uses,
-      new_link_info._1, env.dyn_loc_sources, new_mov_sources,
-      new_link_info._2, env.cond_fork_depth
+    return Some(env.copy(
+      op_sources= new_link_info._1, linked= new_link_info._2
     ))
   end shift
 
@@ -193,10 +186,7 @@ case class NoOp()                                                               
 
 // An unconditional jump, like 'jmp, but without verification
 case class RawUnconditionalJump(target: Int)                                      extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(Env(
-    target - 1, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
-    env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
-  ))
+  def shift(env: Env): Traversable[Env] = Some(env.copy(line= target - 1))
 
 // An unconditional jump, like 'jmp, but with verification
 class UnconditionalJump(override val target: Int)
@@ -206,10 +196,11 @@ class UnconditionalJump(override val target: Int)
 case class RawConditionalJump(op: String, target: Int)                            extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] =
     List(env.line, target - 1) map {
-      Env(
-        _, env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
-        op :: (env.dyn_loc_sources ++ env.cmp_uses), env.mov_sources,
-        env.linked, env.cond_fork_depth + 1
+      local_target => env.copy(
+        line= local_target,
+        dyn_loc_sources= op :: (env.dyn_loc_sources ++ env.cmp_uses),
+        linked= env.linked ++ env.cmp_uses.map( _ -> op ),
+        cond_fork_depth= env.cond_fork_depth + 1
       )
     }
   end shift
@@ -222,13 +213,7 @@ class ConditionalJump(override val op: String, override val target: Int)
 case class RawProcedureCall(target: Int)                                          extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] =
     val return_addr = env.line + 1
-    return Some(Env(
-      target,
-      env.stack_ops,
-      return_addr :: env.cs,
-      env.cmp_uses, env.op_sources, env.dyn_loc_sources,
-      env.mov_sources, env.linked, env.cond_fork_depth
-    ))
+    return Some(env.copy(line= target, cs= return_addr :: env.cs))
   end shift
 
 // A call to a procedure, like 'call, but with verification
@@ -239,11 +224,7 @@ class ProcedureCall(override val target: Int)
 case class ProcedureReturn()                                                      extends HyperI[Env]:
   def shift(env: Env): Traversable[Env] = env.cs match
     case return_addr :: cs_remaining
-      => Some(Env(
-        return_addr, env.stack_ops, cs_remaining,
-        env.cmp_uses, env.op_sources, env.dyn_loc_sources,
-        env.mov_sources, env.linked, env.cond_fork_depth
-      ))
+      => Some(env.copy(line= return_addr, cs= cs_remaining))
     case Nil => None
 
 given [E]: Interpretable[ParallelExpr[HyperI[E]], Traversable[E], Nothing] with
@@ -292,11 +273,15 @@ given [E : SteppedRepr, T](
     Some(expr) -> stepper.step(env)
   end eval
 
-@main def main = println(test())
-
-def test()(
+def graph_repr(instructions: Traversable[HyperI[Env]])(
   using interpreter: Interpretable[Traversable[HyperI[Env]], Traversable[Env], Nothing]
-) = interpreter.exec(List(new Env()), List(
+): Set[Tuple2[String, String]] =
+  interpreter.exec(List(new Env()), instructions)
+    .map(_.linked)
+    .map(_.filter(_ != _))
+    .reduce(_ ++ _)
+
+def main(args: Array[String]) = assert(graph_repr(List(
   NoOp(),
   StandardOp("dec", List("eax"), List()),
   StandardOp("inc", List("ebx"), List()),
@@ -313,4 +298,9 @@ def test()(
   StackPop("[0xA]"),
   StandardOp("sub", List("eax"), List("[0xA]")),
   ProcedureCall(8)
-)).map(_.linked).map(_.filter(_ != _)).reduce(_ ++ _)
+)) == Set(
+    ("dec", "xlatb"), ("inc", "xlatb"), ("inc", "dec"), ("add", "xlatb"), ("dec", "add"),
+    ("jnz", "dec"), ("inc", "sub"), ("add", "jnz"), ("xlatb", "sub"), ("inc", "jnz"),
+    ("add", "inc"), ("jnz", "inc"), ("add", "sub"), ("jnz", "sub"), ("jnz", "add"),
+    ("add", "dec"), ("inc", "add"), ("jnz", "xlatb")
+))
