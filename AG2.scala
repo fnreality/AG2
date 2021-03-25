@@ -1,8 +1,10 @@
 import scala.annotation.tailrec
 import scala.util.NotGiven
 
+type Tr[+T] = Traversable[T]
+
 // Represent the programs environment
-case class Env(
+case class CPUHyperEnv(
   val line: Int = 0,                                // The current line the interpreter should be on, used for WithIRef
   val stack_ops: List[List[String]] = List(),       // The stack, as the original source operations instead of the data
   val cs: List[Int] = List(),                       // The call stack, containing the return addresses as line numbers
@@ -23,15 +25,15 @@ trait WithNoOp[+T]:
 trait SteppedRepr[T]:
   def step(env: T): T
 
-given SteppedRepr[Env] with
-  def step(env: Env): Env = Env(
+given SteppedRepr[CPUHyperEnv] with
+  def step(env: CPUHyperEnv): CPUHyperEnv = CPUHyperEnv(
     env.line + 1,
     env.stack_ops, env.cs, env.cmp_uses, env.op_sources,
     env.dyn_loc_sources, env.mov_sources, env.linked, env.cond_fork_depth
   )
 
-given [T : SteppedRepr]: SteppedRepr[Traversable[T]] with
-  def step(env: Traversable[T]): Traversable[T] =
+given [T : SteppedRepr]: SteppedRepr[Tr[T]] with
+  def step(env: Tr[T]): Tr[T] =
     env.map(summon[SteppedRepr[T]].step)
   end step
 
@@ -43,39 +45,39 @@ object ParallelExprs:
   opaque type ParallelExpr[+T] = List[T]
   
   object ParallelExpr:
-    def apply[T](tr: Traversable[T]): ParallelExpr[T] = tr.toList
+    def apply[T](tr: Tr[T]): ParallelExpr[T] = tr.toList
 
   extension [T](x : ParallelExpr[T])
     def toList: List[T] = x
 
 import ParallelExprs._
 
-given [T : WithNoOp]: WithIRef[Traversable[T], Env, T] with
-  def retrieve(env: Env, expr: Traversable[T]): T =
+given [T : WithNoOp]: WithIRef[Tr[T], CPUHyperEnv, T] with
+  def retrieve(env: CPUHyperEnv, expr: Tr[T]): T =
     if hasRemaining(env, expr)
       then expr.drop(env.line).head
     else summon[WithNoOp[T]].noOp
   end retrieve
   
-  def hasRemaining(env: Env, expr: Traversable[T]): Boolean =
+  def hasRemaining(env: CPUHyperEnv, expr: Tr[T]): Boolean =
     expr.size > env.line
   end hasRemaining
 
 given [T, E, R](
-  using iref: WithIRef[Traversable[T], E, R]
-): WithIRef[Traversable[T], Traversable[E], ParallelExpr[R]] with
-  def retrieve(env: Traversable[E], expr: Traversable[T]): ParallelExpr[R] =
+  using iref: WithIRef[Tr[T], E, R]
+): WithIRef[Tr[T], Tr[E], ParallelExpr[R]] with
+  def retrieve(env: Tr[E], expr: Tr[T]): ParallelExpr[R] =
     ParallelExpr( env.map {
       iref.retrieve(_, expr)
     } )
   end retrieve
   
-  def hasRemaining(env: Traversable[E], expr: Traversable[T]): Boolean =
+  def hasRemaining(env: Tr[E], expr: Tr[T]): Boolean =
     !env.exists(!iref.hasRemaining(_, expr))
   end hasRemaining
 
 trait CheckedHyperEnv[E] extends HyperI[E]:
-  abstract override def shift(env: E): Traversable[E] =
+  abstract override def shift(env: E): Tr[E] =
     val result = super.shift(env)
     return result.flatMap { x => if (
       summon[VerifiableEnv[E]].verify(result)
@@ -85,18 +87,18 @@ trait CheckedHyperEnv[E] extends HyperI[E]:
 trait VerifiableEnv[-E]:
   def verify(env: E): Boolean
 
-given VerifiableEnv[Env] with
-  def verify(env: Env): Boolean =
+given VerifiableEnv[CPUHyperEnv] with
+  def verify(env: CPUHyperEnv): Boolean =
     env.cond_fork_depth <= 10
   end verify
 
 given [T](using NotGiven[VerifiableEnv[T]]): VerifiableEnv[T] with
   def verify(env: T): Boolean = true
 
-type ResEnv[+V, +E] = Tuple2[Option[V], E]
+type ResCPUEnv[+V, +E] = Tuple2[Option[V], E]
 
 trait Interpretable[-T, E, +V]:
-  def eval(env: E, expr: T)(using stepper: SteppedRepr[E]): ResEnv[V, E] =
+  def eval(env: E, expr: T)(using stepper: SteppedRepr[E]): ResCPUEnv[V, E] =
     None -> stepper.step( this.exec(env, expr) )
   end eval
   def exec(env: E, expr: T)(using stepper: SteppedRepr[E]): E =
@@ -104,14 +106,16 @@ trait Interpretable[-T, E, +V]:
   end exec
 
 trait HyperI[E]:
-  def shift(env: E): Traversable[E]
+  def shift(env: E): Tr[E]
 
-given WithNoOp[HyperI[Env]] with
-  def noOp: HyperI[Env] = NoOp()
+type CPUHyperI = HyperI[CPUHyperEnv]
+
+given WithNoOp[CPUHyperI] with
+  def noOp: CPUHyperI = NoOp()
 
 // A normal operation, like 'dec
-case class StandardOp(op: String, gen: List[String], uses: List[String])          extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(env.copy(
+case class StandardOp(op: String, gen: List[String], uses: List[String])          extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = Some(env.copy(
     op_sources= env.op_sources ++ Map( gen.map { _ -> op } : _*),
     linked= env.linked ++ Map( (gen ++ uses).flatMap(env.accessOp).map {
       _ -> op
@@ -121,14 +125,14 @@ case class StandardOp(op: String, gen: List[String], uses: List[String])        
   ))
 
 // An instruction that pushes something onto the stack, like 'push
-case class StackPush(src: String)                                                 extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(env.copy(stack_ops= (
+case class StackPush(src: String)                                                 extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = Some(env.copy(stack_ops= (
       env.accessOp(src).toList ::: env.dyn_loc_sources
     ) :: env.stack_ops))
 
 // An instruction that pops something off of the stack, like 'pop
-case class StackPop(target: String)                                               extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = env.stack_ops match
+case class StackPop(target: String)                                               extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = env.stack_ops match
     case local_sources :: remaining
       => Some(env.copy(
         stack_ops= remaining,
@@ -139,16 +143,16 @@ case class StackPop(target: String)                                             
     case Nil => None
 
 // An instruction that triggers the internal comparator, like 'cmp
-case class ComparatorTrigger(lhs: String, rhs: String)                            extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(env.copy(
+case class ComparatorTrigger(lhs: String, rhs: String)                            extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = Some(env.copy(
     cmp_uses= List(
       env.accessOp(lhs), env.accessOp(rhs)
     ).flatten ::: env.dyn_loc_sources
   ))
 
 // A mov-like instruction, like 'mov or 'xchg
-case class TransferOp(op: String, target: String, src: String)                    extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] =
+case class TransferOp(op: String, target: String, src: String)                    extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] =
     val pure_transfer = (op == "mov").||(
       op == "lea" || op == "xchg"
     )
@@ -181,20 +185,20 @@ case class TransferOp(op: String, target: String, src: String)                  
   end shift
 
 // A no-op, like 'nop or 'hint_nop7
-case class NoOp()                                                                 extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(env)
+case class NoOp()                                                                 extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = Some(env)
 
 // An unconditional jump, like 'jmp, but without verification
-case class RawUnconditionalJump(target: Int)                                      extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = Some(env.copy(line= target - 1))
+case class RawUnconditionalJump(target: Int)                                      extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = Some(env.copy(line= target - 1))
 
 // An unconditional jump, like 'jmp, but with verification
 class UnconditionalJump(override val target: Int)
-  extends RawUnconditionalJump(target) with CheckedHyperEnv[Env]
+  extends RawUnconditionalJump(target) with CheckedHyperEnv[CPUHyperEnv]
 
 // A conditional jump, like 'jnz, but without verification
-case class RawConditionalJump(op: String, target: Int)                            extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] =
+case class RawConditionalJump(op: String, target: Int)                            extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] =
     List(env.line, target - 1) map {
       local_target => env.copy(
         line= local_target,
@@ -207,57 +211,57 @@ case class RawConditionalJump(op: String, target: Int)                          
 
 // A conditional jump, like 'jnz, but with verification
 class ConditionalJump(override val op: String, override val target: Int)
-  extends RawConditionalJump(op, target) with CheckedHyperEnv[Env]
+  extends RawConditionalJump(op, target) with CheckedHyperEnv[CPUHyperEnv]
 
 // A call to a procedure, like 'call, but without verification
-case class RawProcedureCall(target: Int)                                          extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] =
+case class RawProcedureCall(target: Int)                                          extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] =
     val return_addr = env.line + 1
     return Some(env.copy(line= target, cs= return_addr :: env.cs))
   end shift
 
 // A call to a procedure, like 'call, but with verification
 class ProcedureCall(override val target: Int)
-  extends RawProcedureCall(target) with CheckedHyperEnv[Env]
+  extends RawProcedureCall(target) with CheckedHyperEnv[CPUHyperEnv]
 
 // A return from a procedures, like 'ret
-case class ProcedureReturn()                                                      extends HyperI[Env]:
-  def shift(env: Env): Traversable[Env] = env.cs match
+case class ProcedureReturn()                                                      extends CPUHyperI:
+  def shift(env: CPUHyperEnv): Tr[CPUHyperEnv] = env.cs match
     case return_addr :: cs_remaining
       => Some(env.copy(line= return_addr, cs= cs_remaining))
     case Nil => None
 
-given [E]: Interpretable[ParallelExpr[HyperI[E]], Traversable[E], Nothing] with
-  override def exec(env: Traversable[E], expr: ParallelExpr[HyperI[E]])(
-    using stepper: SteppedRepr[Traversable[E]]
-  ): Traversable[E] = stepper.step( expr.toList.zip(env).flatMap {
+given [E]: Interpretable[ParallelExpr[HyperI[E]], Tr[E], Nothing] with
+  override def exec(env: Tr[E], expr: ParallelExpr[HyperI[E]])(
+    using stepper: SteppedRepr[Tr[E]]
+  ): Tr[E] = stepper.step( expr.toList.zip(env).flatMap {
     _.shift(_)
   } )
 
-// T := HyperI[Env]
-// E := Traversable[Env]
-// iref : WithIRef[Traversable[T], E, Y]
-// iref : WithIRef[Traversable[T], Traversable[Env], ParallelExpr[R]]
-//        E := Env
+// T := CPUHyperI
+// E := Tr[CPUHyperEnv]
+// iref : WithIRef[Tr[T], E, Y]
+// iref : WithIRef[Tr[T], Tr[CPUHyperEnv], ParallelExpr[R]]
+//        E := CPUHyperEnv
 //        Y := ParallelExpr[R]
-//        using iref : WithIRef[Traversable[T], E, R]
-//        using iref : WithIRef[Traversable[T], E, T]
+//        using iref : WithIRef[Tr[T], E, R]
+//        using iref : WithIRef[Tr[T], E, T]
 //        R := T
 // Y := ParallelExpr[T]
 // interpreter : Interpretable[Y, E, Nothing]
-// interpreter : Interpretable[ParallelExpr[HyperI[Env]], Traversable[Env], Nothing]
+// interpreter : Interpretable[ParallelExpr[CPUHyperI], Tr[CPUHyperEnv], Nothing]
 
 given [E : SteppedRepr, T, Y](
-  using iref: WithIRef[Traversable[T], E, Y]
+  using iref: WithIRef[Tr[T], E, Y]
 )(
   using interpreter: Interpretable[Y, E, Nothing]
-): Interpretable[Traversable[T], E, Nothing] with
-  override def exec(env: E, expr: Traversable[T])(
+): Interpretable[Tr[T], E, Nothing] with
+  override def exec(env: E, expr: Tr[T])(
     using SteppedRepr[E]
   ) = execRecursive(env, expr)
 
   @tailrec
-  final def execRecursive(env: E, expr: Traversable[T])(
+  final def execRecursive(env: E, expr: Tr[T])(
     using SteppedRepr[E]
   ): E = if iref.hasRemaining(env, expr)
     then execRecursive(interpreter.exec(
@@ -273,34 +277,40 @@ given [E : SteppedRepr, T](
     Some(expr) -> stepper.step(env)
   end eval
 
-def graph_repr(instructions: Traversable[HyperI[Env]])(
-  using interpreter: Interpretable[Traversable[HyperI[Env]], Traversable[Env], Nothing]
+type CPUHyperInterpreter = Interpretable[Tr[CPUHyperI], Tr[CPUHyperEnv], Nothing]
+
+def graph_repr(instructions: Tr[CPUHyperI])(
+  using interpreter: CPUHyperInterpreter
 ): Set[Tuple2[String, String]] =
-  interpreter.exec(List(new Env()), instructions)
+  interpreter.exec(List(new CPUHyperEnv()), instructions)
     .map(_.linked)
     .map(_.filter(_ != _))
     .reduce(_ ++ _)
 
-def main(args: Array[String]) = assert(graph_repr(List(
-  NoOp(),
-  StandardOp("dec", List("eax"), List()),
-  StandardOp("inc", List("ebx"), List()),
-  TransferOp("xchg", "eax", "ebx"),
-  StandardOp("add", List("ecx"), List("eax")),
-  ComparatorTrigger("ecx", "ebx"),
-  ConditionalJump("jnz", 10),
-  UnconditionalJump(0),
-  StandardOp("add", List("[0xA]"), List("edx")),
-  ProcedureReturn(),
-  StandardOp("xlatb", List("eax"), List("ebx")),
-  StandardOp("dec", List("edx"), List()),
-  StackPush("edx"),
-  StackPop("[0xA]"),
-  StandardOp("sub", List("eax"), List("[0xA]")),
-  ProcedureCall(8)
-)) == Set(
-    ("dec", "xlatb"), ("inc", "xlatb"), ("inc", "dec"), ("add", "xlatb"), ("dec", "add"),
-    ("jnz", "dec"), ("inc", "sub"), ("add", "jnz"), ("xlatb", "sub"), ("inc", "jnz"),
-    ("add", "inc"), ("jnz", "inc"), ("add", "sub"), ("jnz", "sub"), ("jnz", "add"),
-    ("add", "dec"), ("inc", "add"), ("jnz", "xlatb")
-))
+def main(args: Array[String]) = 
+  assert(graph_repr(List(
+    NoOp(),
+    StandardOp("dec", List("eax"), List()),
+    StandardOp("inc", List("ebx"), List()),
+    TransferOp("xchg", "eax", "ebx"),
+    StandardOp("add", List("ecx"), List("eax")),
+    ComparatorTrigger("ecx", "ebx"),
+    ConditionalJump("jnz", 10),
+    UnconditionalJump(0),
+    StandardOp("add", List("[0xA]"), List("edx")),
+    ProcedureReturn(),
+    StandardOp("xlatb", List("eax"), List("ebx")),
+    StandardOp("dec", List("edx"), List()),
+    StackPush("edx"),
+    StackPop("[0xA]"),
+    StandardOp("sub", List("eax"), List("[0xA]")),
+    ProcedureCall(8)
+  )) == Set(
+      ("dec" -> "xlatb"), ("inc" -> "xlatb"), ("inc" -> "dec"), ("add" -> "xlatb"), ("dec" -> "add"),
+      ("jnz" -> "dec"), ("inc" -> "sub"), ("add" -> "jnz"), ("xlatb" -> "sub"), ("inc" -> "jnz"),
+      ("add" -> "inc"), ("jnz" -> "inc"), ("add" -> "sub"), ("jnz" -> "sub"), ("jnz" -> "add"),
+      ("add" -> "dec"), ("inc" -> "add"), ("jnz" -> "xlatb")
+  ))
+  println("ok")
+end main
+
